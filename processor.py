@@ -366,13 +366,11 @@ class ExcelProcessor:
                             
                             # Check compatibility
                             conflict = False
-                            # We check all columns except metadata and DUPLICATE/_key
                             check_cols = [c for c in group.columns if c not in ["WORKBOOK NAME", "SHEET NAME", "_key", "DUPLICATE"]]
                             for col in check_cols:
                                 val1 = row[col]
                                 val2 = c_row[col]
                                 
-                                # Compatibility check: If both are non-null and differ ➔ CONFLICT
                                 if not pd.isna(val1) and not pd.isna(val2):
                                     if str(val1).strip() != "" and str(val2).strip() != "":
                                         if str(val1).strip().lower() != str(val2).strip().lower():
@@ -380,16 +378,13 @@ class ExcelProcessor:
                                             break
                             
                             if not conflict:
-                                # Merge row into c_row
                                 for col in group.columns:
                                     if col in ["WORKBOOK NAME", "SHEET NAME"]:
-                                        # Aggregate metadata
                                         existing_meta = set(str(v) for v in str(c_row[col]).split(", ") if v.strip())
                                         new_meta = str(row[col])
                                         existing_meta.add(new_meta)
                                         c_row[col] = ", ".join(sorted(existing_meta))
                                     elif pd.isna(c_row[col]) or str(c_row[col]).strip() == "":
-                                        # Fill sparse data
                                         c_row[col] = row[col]
                                 
                                 consolidated[i] = c_row
@@ -397,25 +392,32 @@ class ExcelProcessor:
                                 break
                         
                         if not merged:
-                            # Add a new row to consolidated list
-                            # Important: Workbook/Sheet need to be strings for later comma-joining if they merge
                             new_row = row.copy()
                             consolidated.append(new_row)
                     
-                    return pd.DataFrame(consolidated)
+                    res_df = pd.DataFrame(consolidated)
+                    # If the key-group resulted in multiple rows, mark them as 'Conflict'
+                    if len(res_df) > 1:
+                        res_df["Conflict"] = "Conflict"
+                    else:
+                        res_df["Conflict"] = ""
+                    return res_df
 
                 # Apply the merging logic per key-group
-                distinct_non_null = non_null_keys.groupby("_key", group_keys=False).apply(merge_group).reset_index(drop=True)
+                # We use include_groups=False to silence pandas FutureWarning
+                distinct_non_null = non_null_keys.groupby("_key", group_keys=False).apply(merge_group, include_groups=False).reset_index(drop=True)
                 
             else:
-                distinct_non_null = pd.DataFrame(columns=valid_df.columns)
+                distinct_non_null = pd.DataFrame(columns=valid_df.columns.tolist() + ["Conflict"])
 
             distinct_df = pd.concat([distinct_non_null, null_keys], ignore_index=True)
+            if "Conflict" not in distinct_df.columns: distinct_df["Conflict"] = ""
             distinct_df = distinct_df.drop(columns=["_key", "DUPLICATE"])
             
             valid_df = valid_df.drop(columns=["_key"])
         else:
             distinct_df = valid_df.copy()
+            distinct_df["Conflict"] = ""
 
         # 8. Final Ordering
         def apply_final_order(df, is_invalid=False):
@@ -423,7 +425,7 @@ class ExcelProcessor:
             for c in self.priority_columns:
                 if c not in df.columns: df[c] = ""
             
-            meta_cols = ["DUPLICATE", "WORKBOOK NAME", "SHEET NAME"]
+            meta_cols = ["DUPLICATE", "WORKBOOK NAME", "SHEET NAME", "Conflict"]
             for c in meta_cols:
                 if c not in df.columns: df[c] = ""
             
