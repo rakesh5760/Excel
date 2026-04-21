@@ -347,20 +347,66 @@ class ExcelProcessor:
             key_mask = valid_df["_key"].notna()
             valid_df.loc[key_mask, "DUPLICATE"] = np.where(valid_df[key_mask].duplicated(subset=["_key"], keep='first'), "Duplicate", "Unique")
             
-            # --- Aggregation for Distinct Data ---
-            # We want one row per _key, but showing ALL workbooks and sheets
-            # For records where _key is None (all null), they are already considered Unique and not aggregated.
+            # --- Aggregation for Distinct Data (Targeted Sparse Merging) ---
+            # We merge rows that are "compatible" (no conflicting non-null values).
+            # Conflicting rows (e.g., 'rakesh' vs 'ravi') are kept separate.
             
             non_null_keys = valid_df[valid_df["_key"].notna()]
             null_keys = valid_df[valid_df["_key"].isna()]
             
             if not non_null_keys.empty:
-                # Group and aggregate
-                agg_funcs = {c: "first" for c in non_null_keys.columns if c not in ["WORKBOOK NAME", "SHEET NAME", "_key", "DUPLICATE"]}
-                agg_funcs["WORKBOOK NAME"] = lambda x: ", ".join(sorted(set(str(v) for v in x if not pd.isna(v))))
-                agg_funcs["SHEET NAME"] = lambda x: ", ".join(sorted(set(str(v) for v in x if not pd.isna(v))))
+                def merge_group(group):
+                    # List of consolidated rows for this group
+                    consolidated = []
+                    
+                    for _, row in group.iterrows():
+                        merged = False
+                        for i in range(len(consolidated)):
+                            c_row = consolidated[i]
+                            
+                            # Check compatibility
+                            conflict = False
+                            # We check all columns except metadata and DUPLICATE/_key
+                            check_cols = [c for c in group.columns if c not in ["WORKBOOK NAME", "SHEET NAME", "_key", "DUPLICATE"]]
+                            for col in check_cols:
+                                val1 = row[col]
+                                val2 = c_row[col]
+                                
+                                # Compatibility check: If both are non-null and differ ➔ CONFLICT
+                                if not pd.isna(val1) and not pd.isna(val2):
+                                    if str(val1).strip() != "" and str(val2).strip() != "":
+                                        if str(val1).strip().lower() != str(val2).strip().lower():
+                                            conflict = True
+                                            break
+                            
+                            if not conflict:
+                                # Merge row into c_row
+                                for col in group.columns:
+                                    if col in ["WORKBOOK NAME", "SHEET NAME"]:
+                                        # Aggregate metadata
+                                        existing_meta = set(str(v) for v in str(c_row[col]).split(", ") if v.strip())
+                                        new_meta = str(row[col])
+                                        existing_meta.add(new_meta)
+                                        c_row[col] = ", ".join(sorted(existing_meta))
+                                    elif pd.isna(c_row[col]) or str(c_row[col]).strip() == "":
+                                        # Fill sparse data
+                                        c_row[col] = row[col]
+                                
+                                consolidated[i] = c_row
+                                merged = True
+                                break
+                        
+                        if not merged:
+                            # Add a new row to consolidated list
+                            # Important: Workbook/Sheet need to be strings for later comma-joining if they merge
+                            new_row = row.copy()
+                            consolidated.append(new_row)
+                    
+                    return pd.DataFrame(consolidated)
+
+                # Apply the merging logic per key-group
+                distinct_non_null = non_null_keys.groupby("_key", group_keys=False).apply(merge_group).reset_index(drop=True)
                 
-                distinct_non_null = non_null_keys.groupby("_key", as_index=False).agg(agg_funcs)
             else:
                 distinct_non_null = pd.DataFrame(columns=valid_df.columns)
 
@@ -371,18 +417,20 @@ class ExcelProcessor:
         else:
             distinct_df = valid_df.copy()
 
-        # 8. Final Ordering (Strictly preserves WORKBOOK NAME and SHEET NAME)
+        # 8. Final Ordering
         def apply_final_order(df, is_invalid=False):
             if df.empty: return df
             for c in self.priority_columns:
                 if c not in df.columns: df[c] = ""
-            meta = ["DUPLICATE", "WORKBOOK NAME", "SHEET NAME"]
-            for c in meta:
+            
+            meta_cols = ["DUPLICATE", "WORKBOOK NAME", "SHEET NAME"]
+            for c in meta_cols:
                 if c not in df.columns: df[c] = ""
             
             cols = df.columns.tolist()
             priority = [c for c in self.priority_columns]
-            metadata = [c for c in meta]
+            metadata = [c for c in meta_cols]
+            
             others = [c for c in cols if c not in priority and c not in metadata and c != "ERROR REASON"]
             
             final = priority + others

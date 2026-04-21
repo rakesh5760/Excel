@@ -122,7 +122,7 @@ def main():
             p_col1, p_col2 = st.columns([1, 2])
             with p_col1:
                 st.write("**Detected Workbooks & Sheets:**")
-                st.dataframe(pd.DataFrame(file_info), use_container_width=True, height=200)
+                st.dataframe(pd.DataFrame(file_info), width='stretch', height=200)
             
             with p_col2:
                 st.write("**Detected Column Names (Global):**")
@@ -155,11 +155,11 @@ def main():
                     # Previews
                     tab1, tab2, tab3 = st.tabs(["ALLDATA", "DISTINCT DATA", "INVALID DATA"])
                     with tab1:
-                        st.dataframe(all_data.head(100), use_container_width=True)
+                        st.dataframe(all_data.head(100), width='stretch')
                     with tab2:
-                        st.dataframe(distinct_data.head(100), use_container_width=True)
+                        st.dataframe(distinct_data.head(100), width='stretch')
                     with tab3:
-                        st.dataframe(invalid_data.head(100), use_container_width=True)
+                        st.dataframe(invalid_data.head(100), width='stretch')
                     
                     # Generate Download
                     output = io.BytesIO()
