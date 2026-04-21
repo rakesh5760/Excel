@@ -94,7 +94,6 @@ def main():
         detected_cols = set()
         file_info = []
         
-        # Handle listing files for preview
         files_to_preview = []
         if input_mode == "File Upload":
             files_to_preview = source
@@ -144,36 +143,101 @@ def main():
                 if error:
                     st.error(error)
                 else:
+                    st.session_state['all_data'] = all_data
+                    st.session_state['distinct_data'] = distinct_data
+                    st.session_state['invalid_data'] = invalid_data
                     st.success("✅ Extraction complete!")
+
+        # Show results and Column Merger if data exists in session state
+        if 'all_data' in st.session_state:
+            all_df = st.session_state['all_data']
+            distinct_df = st.session_state['distinct_data']
+            invalid_df = st.session_state['invalid_data']
+
+            # Metrics
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Selected Valid Rows", len(all_df))
+            m2.metric("Distinct Selected Rows", len(distinct_df))
+            m3.metric("Invalid Records", len(invalid_df))
+            
+            # --- 🛠️ COLUMN MERGER SECTION ---
+            st.markdown("---")
+            with st.expander("🛠️ Column Merger (Combine two columns vertically)", expanded=True):
+                st.info("Select two columns below and click 'Combine' to merge them into a new 'Merged Column'.")
+                available_cols = all_df.columns.tolist()
+                
+                # Using a FORM to prevent the UI from "closing" or rerunning on every individual radio click
+                with st.form("merger_form"):
+                    mc1, mc2 = st.columns(2)
+                    with mc1:
+                        col_a = st.radio("Select Column A", options=available_cols, key="merge_a_radio")
+                    with mc2:
+                        col_b = st.radio("Select Column B", options=available_cols, key="merge_b_radio")
                     
-                    # Metrics
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Selected Valid Rows", len(all_data))
-                    m2.metric("Distinct Selected Rows", len(distinct_data))
-                    m3.metric("Invalid Records", len(invalid_data))
-                    
-                    # Previews
-                    tab1, tab2, tab3 = st.tabs(["ALLDATA", "DISTINCT DATA", "INVALID DATA"])
-                    with tab1:
-                        st.dataframe(all_data.head(100), width='stretch')
-                    with tab2:
-                        st.dataframe(distinct_data.head(100), width='stretch')
-                    with tab3:
-                        st.dataframe(invalid_data.head(100), width='stretch')
-                    
-                    # Generate Download
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                        all_data.to_excel(writer, sheet_name='ALLDATA', index=False)
-                        distinct_data.to_excel(writer, sheet_name='DISTINCT DATA', index=False)
-                        invalid_data.to_excel(writer, sheet_name='INVALID DATA', index=False)
-                    
-                    st.download_button(
-                        label="📥 Download PROCESSED DATA.xlsx",
-                        data=output.getvalue(),
-                        file_name="PROCESSED DATA.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                    submit_merge = st.form_submit_button("🧪 Combine Selected Columns")
+                
+                if submit_merge:
+                    if col_a == col_b:
+                        st.error("Please select two DIFFERENT columns to merge.")
+                    else:
+                        with st.spinner("Merging columns..."):
+                            def merge_logic(df):
+                                if col_a in df.columns and col_b in df.columns:
+                                    # Create the merged column with newline
+                                    df["Merged Column"] = df[col_a].astype(str) + "\n" + df[col_b].astype(str)
+                                    # Clean up "nan" strings if any
+                                    df["Merged Column"] = df["Merged Column"].str.replace("nan", "").str.strip()
+                                    # Drop originals
+                                    df = df.drop(columns=[col_a, col_b])
+                                    # Move Merged Column after 'INR' column if it exists
+                                    cols = df.columns.tolist()
+                                    target_idx = 0
+                                    if "INR" in cols:
+                                        target_idx = cols.index("INR") + 1
+                                    
+                                    cols.insert(target_idx, cols.pop(cols.index("Merged Column")))
+                                    df = df[cols]
+                                return df
+                            
+                            st.session_state['all_data'] = merge_logic(all_df)
+                            st.session_state['distinct_data'] = merge_logic(distinct_df)
+                            st.rerun()
+
+            # Previews
+            # We cast to string for the preview to avoid Arrow serialization errors with mixed types
+            tab1, tab2, tab3 = st.tabs(["ALLDATA", "DISTINCT DATA", "INVALID DATA"])
+            with tab1:
+                st.dataframe(st.session_state['all_data'].head(100).astype(str), width='stretch')
+            with tab2:
+                st.dataframe(st.session_state['distinct_data'].head(100).astype(str), width='stretch')
+            with tab3:
+                st.dataframe(st.session_state['invalid_data'].head(100).astype(str), width='stretch')
+            
+            # Generate Download
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                st.session_state['all_data'].to_excel(writer, sheet_name='ALLDATA', index=False)
+                st.session_state['distinct_data'].to_excel(writer, sheet_name='DISTINCT DATA', index=False)
+                st.session_state['invalid_data'].to_excel(writer, sheet_name='INVALID DATA', index=False)
+                
+                # Apply Wrap Text to "Merged Column" if it exists
+                workbook = writer.book
+                wrap_format = workbook.add_format({'text_wrap': True, 'valign': 'top'})
+                
+                for sheet_name in ['ALLDATA', 'DISTINCT DATA']:
+                    worksheet = writer.sheets[sheet_name]
+                    df_to_check = st.session_state['all_data'] if sheet_name == 'ALLDATA' else st.session_state['distinct_data']
+                    if "Merged Column" in df_to_check.columns:
+                        col_idx = df_to_check.columns.get_loc("Merged Column")
+                        # Apply to the whole column (excluding header usually done by pandas, but we set for all data rows)
+                        worksheet.set_column(col_idx, col_idx, 20, wrap_format)
+
+            st.download_button(
+                label="📥 Download PROCESSED DATA.xlsx",
+                data=output.getvalue(),
+                file_name="PROCESSED DATA.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
     else:
         st.info("Please upload files or provide a folder path to start.")
