@@ -46,7 +46,7 @@ def main():
     
     # Column 1
     col1_name = st.sidebar.text_input("Column 1 Name", value="Timestamp")
-    col1_filter = st.sidebar.text_input("Filter Value for Col 1 (Optional)", placeholder="e.g. 20:04:2024")
+    col1_filter = st.sidebar.text_input("Filter Value for Col 1 (Optional)", placeholder="e.g. 2017-11-27")
     
     # Column 2
     col2_name = st.sidebar.text_input("Column 2 Name", value="Coin")
@@ -59,7 +59,7 @@ def main():
     st.sidebar.markdown("#### 🕒 Timestamp Hint")
     ts_hint = st.sidebar.selectbox(
         "Format for Timestamp Filter",
-        ["DD:MM:YYYY HH:MM:SS", "DD:MM:YYYY", "HH:MM", "HH:MM:SS"]
+        ["YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD", "HH:MM", "HH:MM:SS"]
     )
     
     st.sidebar.markdown("---")

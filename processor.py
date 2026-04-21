@@ -308,12 +308,10 @@ class ExcelProcessor:
             f_val = str(f_val).strip().lower()
             
             if col_name == "Timestamp":
-                # Flexible matching: if user gives '05:10', match 05:10:00 to 05:10:59
-                # We format to the most detailed string and check for containment
-                full_fmt = "%d:%m:%Y %H:%M:%S"
+                # Flexible matching: if user gives '10:00', match any row containing it
+                # We use the new standard 24-hour format for internal string comparison
+                full_fmt = "%Y-%m-%d %H:%M:%S"
                 
-                # Check if the user's filter value is contained within the formatted timestamp string
-                # This allows filtering by Date, Time, or both dynamically.
                 mask = combined_df["Timestamp"].apply(
                     lambda x: x.strftime(full_fmt) if not pd.isna(x) else ""
                 ).str.lower().str.contains(f_val, regex=False)
@@ -329,9 +327,9 @@ class ExcelProcessor:
         valid_df = combined_df[~invalid_mask].copy()
         invalid_df = combined_df[invalid_mask].copy()
 
-        # Final Formatting for Valid Timestamp
+        # Final Formatting for Valid Timestamp (Standard 24-Hour Format)
         if not valid_df.empty:
-            valid_df["Timestamp"] = valid_df["Timestamp"].dt.strftime("%d:%m:%Y %H:%M:%S")
+            valid_df["Timestamp"] = valid_df["Timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
         # 7. Duplicate Detection
         if not valid_df.empty:
