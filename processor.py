@@ -329,7 +329,8 @@ class ExcelProcessor:
 
         # Final Formatting for Valid Timestamp (Standard 24-Hour Format)
         if not valid_df.empty:
-            valid_df["Timestamp"] = valid_df["Timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+            # Explicitly convert to datetime to avoid "Can only use .dt accessor with datetimelike values" errors
+            valid_df["Timestamp"] = pd.to_datetime(valid_df["Timestamp"], errors='coerce').dt.strftime("%Y-%m-%d %H:%M:%S")
 
         # 7. Duplicate Detection
         if not valid_df.empty:
