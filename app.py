@@ -135,21 +135,43 @@ def main():
             user_cols = [col1_name, col2_name, col3_name]
             filter_values = [col1_filter, col2_filter, col3_filter]
             
-            with st.spinner("Processing metadata and applying filters..."):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            def my_cb(msg, val):
+                status_text.text(msg)
+                if val is not None:
+                    progress_bar.progress(val)
+
+            with st.spinner("Initializing..."):
                 all_data, distinct_data, invalid_data, error = processor.process(
-                    source, user_cols, filter_values, ts_hint
+                    source, user_cols, filter_values, ts_hint, progress_cb=my_cb
                 )
+                
+                # Cleanup progress
+                progress_bar.empty()
+                status_text.empty()
                 
                 if error:
                     st.error(error)
                 else:
-                    st.session_state['all_data'] = all_data
-                    st.session_state['distinct_data'] = distinct_data
-                    st.session_state['invalid_data'] = invalid_data
-                    st.success("✅ Extraction complete!")
+                    # Log any skipped files
+                    if processor.load_errors:
+                        for skip_err in processor.load_errors:
+                            st.warning(f"⚠️ {skip_err}")
+
+                    if all_data.empty:
+                        st.info("ℹ️ No rows matched your selected filters or columns. Please check your configuration.")
+                        # Clear previous data from state to prevent showing old results
+                        if 'all_data' in st.session_state: del st.session_state['all_data']
+                    else:
+                        st.session_state['all_data'] = all_data
+                        st.session_state['distinct_data'] = distinct_data
+                        st.session_state['invalid_data'] = invalid_data
+                        st.success("✅ Extraction complete!")
 
         # Show results and Column Merger if data exists in session state
-        if 'all_data' in st.session_state:
+        if 'all_data' in st.session_state and not st.session_state['all_data'].empty:
             all_df = st.session_state['all_data']
             distinct_df = st.session_state['distinct_data']
             invalid_df = st.session_state['invalid_data']

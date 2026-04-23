@@ -7,6 +7,7 @@ import io
 class ExcelProcessor:
     def __init__(self):
         self.raw_data = [] # List of dataframes
+        self.load_errors = [] # To capture file-level failures
         self.all_columns = set()
         self.priority_columns = ["Timestamp", "Coin", "Quantity", "$", "INR"]
         self.synonyms = {
@@ -55,7 +56,9 @@ class ExcelProcessor:
                     
                     self.raw_data.append(df)
             except Exception as e:
-                print(f"Error loading {name}: {e}")
+                err_msg = f"Error loading {name}: {str(e)}"
+                print(err_msg)
+                self.load_errors.append(err_msg)
         return self.raw_data
 
     def normalize_columns(self, df):
@@ -144,21 +147,41 @@ class ExcelProcessor:
             if not s_val:
                 return pd.NaT
             
-            # Try dayfirst=True
+            # Try standard parsing first
             try:
                 dt = pd.to_datetime(s_val, dayfirst=True, errors='coerce')
-                if not pd.isna(dt):
-                    return dt.round('s')
-            except:
-                pass
+                if not pd.isna(dt): return dt.round('s')
+            except: pass
+
+            # Handle messy strings (e.g. "[1:17 pm, 23/04/2026] Text")
+            import re
             
-            # Try dayfirst=False
-            try:
-                dt = pd.to_datetime(s_val, dayfirst=False, errors='coerce')
-                if not pd.isna(dt):
-                    return dt.round('s')
-            except:
-                pass
+            # Pattern 1: Numeric dates (23/04/2026 or 2026-04-23)
+            # Pattern 2: Text dates (7 September 2020 or Nov-10-2021)
+            patterns = [
+                r'(\d{1,4}[-/.]\d{1,4}[-/.]\d{1,4})',
+                r'(\d{1,2}\s+[a-z]+\s+\d{4})',
+                r'([a-z]+\s+\d{1,2},?\s+\d{4})',
+                r'([a-z]{3}-\d{1,2}-\d{4})'
+            ]
+            
+            extracted = None
+            for p in patterns:
+                match = re.search(p, s_val, re.IGNORECASE)
+                if match:
+                    extracted = match.group(1)
+                    break
+            
+            if extracted:
+                # Add time if found
+                time_match = re.search(r'(\d{1,2}:\d{2}(?::\d{2})?(\s*[ap]m)?)', s_val, re.IGNORECASE)
+                if time_match:
+                    extracted += " " + time_match.group(1)
+                
+                try:
+                    dt = pd.to_datetime(extracted, dayfirst=True, errors='coerce')
+                    if not pd.isna(dt): return dt.round('s')
+                except: pass
                 
             return pd.NaT
 
@@ -235,17 +258,26 @@ class ExcelProcessor:
 
         return df
 
-    def process(self, source, user_cols, filter_values, ts_hint):
+    def process(self, source, user_cols, filter_values, ts_hint, progress_cb=None):
         """Main processing pipeline with Dynamic Data Selection (filtering)."""
         all_processed = []
         
+        def update_prog(msg, val=None):
+            if progress_cb:
+                progress_cb(msg, val)
+
         # 1. Load files (from folder or uploads)
+        update_prog("Searching for files...", 5)
+        # We'll do a quick scan to get total count for progress
         dfs = self.load_files(source)
         if not dfs:
             return None, None, None, "No data found in source."
 
         # 2. Pre-process each sheet
-        for df in dfs:
+        total_dfs = len(dfs)
+        for i, df in enumerate(dfs):
+            pct = int(5 + (i/total_dfs)*45) # 5% to 50%
+            update_prog(f"Normalizing sheet {i+1} of {total_dfs}...", pct)
             df = self.normalize_columns(df)
             df = self.map_columns(df)
             df = self.handle_timestamp_logic(df)
@@ -295,6 +327,7 @@ class ExcelProcessor:
             return None, None, None, "Validation Error: One of the 3 columns must be a Timestamp column."
 
         # 5. Dynamic Data Selection (Filtering)
+        update_prog("Applying filters...", 60)
         # We apply filtering to the combined_df before splitting valid/invalid? 
         # Usually, filtering happens on valid data, but user said "select the data from files".
         # We'll filter the whole combined_df.
@@ -405,8 +438,10 @@ class ExcelProcessor:
                     return res_df
 
                 # Apply the merging logic per key-group
+                update_prog("Analyzing conflicts & merging records...", 85)
                 # We use include_groups=False to silence pandas FutureWarning
                 distinct_non_null = non_null_keys.groupby("_key", group_keys=False).apply(merge_group, include_groups=False).reset_index(drop=True)
+                update_prog("Finalizing reports...", 95)
                 
             else:
                 distinct_non_null = pd.DataFrame(columns=valid_df.columns.tolist() + ["Conflict"])
