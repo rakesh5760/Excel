@@ -340,11 +340,13 @@ class ExcelProcessor:
                 progress_cb(msg, val)
 
         # 1. Load files (from folder or uploads)
-        update_prog("Searching for files...", 5)
-        # We'll do a quick scan to get total count for progress
+        update_prog("Searching & reading source files...", 5)
         dfs = self.load_files(source)
+        
         if not dfs:
-            return None, None, None, "No data found in source."
+            if self.load_errors:
+                return None, None, None, f"Loading Error: {self.load_errors[0]}"
+            return None, None, None, "No valid data found in the provided source (Ensure files are .xlsx and not empty)."
 
         # 2. Pre-process each sheet
         total_dfs = len(dfs)
