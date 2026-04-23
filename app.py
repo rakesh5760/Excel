@@ -241,12 +241,17 @@ def main():
                 wrap_format = workbook.add_format({'text_wrap': True, 'valign': 'top'})
                 
                 for sheet_name in ['ALLDATA', 'DISTINCT DATA']:
-                    worksheet = writer.sheets[sheet_name]
-                    df_to_check = st.session_state['all_data'] if sheet_name == 'ALLDATA' else st.session_state['distinct_data']
-                    if "Merged Column" in df_to_check.columns:
-                        col_idx = df_to_check.columns.get_loc("Merged Column")
-                        # Apply to the whole column (excluding header usually done by pandas, but we set for all data rows)
-                        worksheet.set_column(col_idx, col_idx, 20, wrap_format)
+                    if sheet_name in writer.sheets:
+                        worksheet = writer.sheets[sheet_name]
+                        df_to_check = st.session_state['all_data'] if sheet_name == 'ALLDATA' else st.session_state['distinct_data']
+                        
+                        # Columns that benefit from wrapping
+                        wrap_targets = ["Merged Column", "WORKBOOK NAME", "SHEET NAME", "RID"]
+                        for target in wrap_targets:
+                            if target in df_to_check.columns:
+                                col_idx = df_to_check.columns.get_loc(target)
+                                # Set width to 25 and apply wrap format
+                                worksheet.set_column(col_idx, col_idx, 25, wrap_format)
 
             st.download_button(
                 label="📥 Download PROCESSED DATA.xlsx",
