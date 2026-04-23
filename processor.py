@@ -69,13 +69,23 @@ class ExcelProcessor:
                         df = df.dropna(how='all')
                         if df.empty: continue
                         
-                        # Generate RID: Just the original row number (e.g. 6)
-                        df["RID"] = df.index + 2
-                        df_orig.insert(0, "RID", df_orig.index + 2)
-
-                        # Metadata (Separate columns)
-                        df["WORKBOOK NAME"] = name
-                        df["SHEET NAME"] = sheet_name
+                        # Metadata & RID preservation
+                        # Only set if missing (to support re-processing Raw Masters)
+                        existing_cols_upper = [str(c).upper() for c in df.columns]
+                        
+                        if "RID" not in existing_cols_upper:
+                            df["RID"] = df.index + 2
+                            df_orig.insert(0, "RID", df_orig.index + 2)
+                        
+                        if "WORKBOOK NAME" not in existing_cols_upper:
+                            df["WORKBOOK NAME"] = name
+                            
+                        if "SHEET NAME" not in existing_cols_upper:
+                            df["SHEET NAME"] = sheet_name
+                        
+                        # Set Date Error for original if missing
+                        if "DATE ERROR" not in [str(c).upper() for c in df_orig.columns]:
+                            df_orig["DATE ERROR"] = "NO"
                         
                         # Validation for "DATE ERROR" tagging
                         temp_df = self.normalize_columns(df.copy())
@@ -83,9 +93,7 @@ class ExcelProcessor:
                         temp_df = self.handle_timestamp_logic(temp_df)
                         temp_df = self.validate_rows(temp_df)
                         
-                        # Map the validation status back to the original dataframe
-                        # Using the index to match precisely
-                        df_orig["DATE ERROR"] = "NO"
+                        # Update DATE ERROR if invalid
                         invalid_indices = temp_df[temp_df["ERROR REASON"] != ""].index
                         df_orig.loc[invalid_indices, "DATE ERROR"] = "YES"
                         
@@ -475,7 +483,9 @@ class ExcelProcessor:
                             
                             # Check compatibility
                             conflict = False
-                            check_cols = [c for c in group.columns if c not in ["WORKBOOK NAME", "SHEET NAME", "_key", "DUPLICATE"]]
+                            # Check compatibility
+                            # RID, WORKBOOK NAME, and SHEET NAME are metadata and do NOT trigger a conflict
+                            check_cols = [c for c in group.columns if c not in ["WORKBOOK NAME", "SHEET NAME", "RID", "_key", "DUPLICATE"]]
                             for col in check_cols:
                                 val1 = row[col]
                                 val2 = c_row[col]
@@ -488,9 +498,10 @@ class ExcelProcessor:
                             
                             if not conflict:
                                 for col in group.columns:
-                                    if col in ["WORKBOOK NAME", "SHEET NAME"]:
-                                        existing_meta = set(str(v) for v in str(c_row[col]).split(", ") if v.strip())
-                                        new_meta = str(row[col])
+                                    if col in ["WORKBOOK NAME", "SHEET NAME", "RID"]:
+                                        # Merge metadata by joining unique values
+                                        existing_meta = set(str(v).strip() for v in str(c_row[col]).split(",") if str(v).strip())
+                                        new_meta = str(row[col]).strip()
                                         existing_meta.add(new_meta)
                                         c_row[col] = ", ".join(sorted(existing_meta))
                                     elif pd.isna(c_row[col]) or str(c_row[col]).strip() == "":
