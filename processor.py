@@ -103,13 +103,18 @@ class ExcelProcessor:
     def normalize_columns(self, df):
         """Trim spaces, lowercase (except metadata), and remove duplicate columns."""
         # Normalize column names - preserve metadata casing
-        protected = ["WORKBOOK NAME", "SHEET NAME", "RID", "DUPLICATE", "Merged Column", "Conflict", "ERROR REASON", "ISSUE"]
+        protected = ["WORKBOOK NAME", "SHEET NAME", "RID", "DUPLICATE", "Timestamp", "Date", "Time", "Merged Column", "Conflict", "ERROR REASON", "ISSUE"]
         new_cols = []
         for c in df.columns:
             c_str = str(c).strip()
-            if c_str.upper() in protected:
-                new_cols.append(c_str.upper())
-            else:
+            # Case-insensitive check against protection list, but use the protected case exactly
+            found_protected = False
+            for p in protected:
+                if c_str.lower() == p.lower():
+                    new_cols.append(p)
+                    found_protected = True
+                    break
+            if not found_protected:
                 new_cols.append(c_str.lower())
         df.columns = new_cols
         
@@ -235,6 +240,17 @@ class ExcelProcessor:
         has_date = "date" in cols
         has_time = "time" in cols
         
+        # Identify truly blank sources before we parse them
+        def check_blank(row):
+            possible = ["Timestamp", "date", "time", "Date", "Time", "timestamp"]
+            for c in possible:
+                if c in df.columns:
+                    val = str(row[c]).strip()
+                    if val != "" and val.lower() != "nan" and val.lower() != "nat":
+                        return False
+            return True
+        df["_originally_blank"] = df.apply(check_blank, axis=1)
+
         # Case 1: DATE + TIME
         if has_date and has_time:
             dates = self.parse_timestamp(df["date"])
@@ -287,8 +303,18 @@ class ExcelProcessor:
             df = df.drop(columns=["_time_only_flag"])
             
         # Invalid format mask
-        mask_invalid = df["Timestamp"].isna()
-        df.loc[mask_invalid & (df["ERROR REASON"] == ""), "ERROR REASON"] = "Invalid timestamp format"
+        # We only mark it as an error if the original content was NOT empty/whitespace
+        # but resulted in a NaT (Not a Time)
+        mask_nat = df["Timestamp"].isna()
+        mask_was_blank = df.get("_originally_blank", pd.Series([False]*len(df), index=df.index))
+        
+        # Mark Invalid Format only if NOT originally blank
+        invalid_format_mask = mask_nat & (~mask_was_blank) & (df["ERROR REASON"] == "")
+        df.loc[invalid_format_mask, "ERROR REASON"] = "Invalid timestamp format"
+        
+        # Cleanup flag
+        if "_originally_blank" in df.columns:
+            df = df.drop(columns=["_originally_blank"])
 
         # 2016-2026 Range Check
         # Valid from 01-01-2016 to 31-12-2026
