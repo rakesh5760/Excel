@@ -249,8 +249,16 @@ class ExcelProcessor:
             
         # Invalid format mask
         mask_invalid = df["Timestamp"].isna()
-        # Only set if reason is not already set
         df.loc[mask_invalid & (df["ERROR REASON"] == ""), "ERROR REASON"] = "Invalid timestamp format"
+
+        # 2016-2026 Range Check
+        # Valid from 01-01-2016 to 31-12-2026
+        start_date = datetime(2016, 1, 1)
+        end_date = datetime(2026, 12, 31, 23, 59, 59)
+        
+        valid_ts_mask = df["Timestamp"].notna()
+        range_mask = (df["Timestamp"] < start_date) | (df["Timestamp"] > end_date)
+        df.loc[valid_ts_mask & range_mask & (df["ERROR REASON"] == ""), "ERROR REASON"] = "Outside valid date range (2016-2026)"
         
         # If absolutely no timestamp related columns
         if not any(c in cols for c in ["Timestamp", "date", "time"]):
@@ -462,6 +470,13 @@ class ExcelProcessor:
                 if c not in df.columns: df[c] = ""
             
             meta_cols = ["DUPLICATE", "WORKBOOK NAME", "SHEET NAME", "Conflict"]
+            if is_invalid:
+                # Add ISSUE column for invalid sheet
+                df["ISSUE"] = df["ERROR REASON"].apply(
+                    lambda x: "Functional Issue" if "range" in str(x).lower() else "Conversional Issue"
+                )
+                meta_cols = ["ISSUE", "WORKBOOK NAME", "SHEET NAME"]
+
             for c in meta_cols:
                 if c not in df.columns: df[c] = ""
             
