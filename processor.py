@@ -23,38 +23,77 @@ class ExcelProcessor:
     def load_files(self, source):
         """Read all sheets from uploaded files or a folder path."""
         self.raw_data = []
-        
-        # Determine source type
-        is_path = isinstance(source, str) and os.path.isdir(source)
+        self.load_errors = []
         files_to_load = []
         
-        if is_path:
-            # List all .xlsx files in folder
-            for f in os.listdir(source):
-                if f.endswith(".xlsx") and not f.startswith("~$"): # Ignore temporary/locked files
-                    files_to_load.append(os.path.join(source, f))
-        else:
-            # Source is list of uploaded files (Streamlit objects)
+        if isinstance(source, str):
+            if os.path.isdir(source):
+                # Directory path
+                for f in os.listdir(source):
+                    if f.endswith(".xlsx") and not f.startswith("~$"):
+                        files_to_load.append(os.path.join(source, f))
+            elif os.path.isfile(source):
+                # Single file path
+                files_to_load = [source]
+            else:
+                # Invalid path string
+                pass
+        elif isinstance(source, list):
+            # List of uploaded files or paths
             files_to_load = source
+        else:
+            # Single uploaded file object
+            files_to_load = [source]
+            
+        self.raw_data_with_rid = [] # Store individual DFs with RID for ZIP export
 
         for file_item in files_to_load:
             try:
-                # Handle both path strings and file objects
                 name = os.path.basename(file_item) if isinstance(file_item, str) else file_item.name
-                xls = pd.ExcelFile(file_item)
                 
-                for sheet_name in xls.sheet_names:
-                    df = pd.read_excel(xls, sheet_name=sheet_name)
-                    df = df.dropna(how='all')
-                    
-                    if df.empty:
-                        continue
+                # Use BytesIO to handle multi-sheet reading more robustly from Streamlit/Buffers
+                if not isinstance(file_item, str):
+                    file_item.seek(0) # Ensure we are at the start
+                    file_bytes = file_item.read()
+                    file_item.seek(0) # Reset pointer for any other potential reads
+                    excel_data = io.BytesIO(file_bytes)
+                else:
+                    excel_data = file_item
+
+                with pd.ExcelFile(excel_data, engine='openpyxl') as xls:
+                    workbook_dfs = {} 
+                    for sheet_name in xls.sheet_names:
+                        df = pd.read_excel(xls, sheet_name=sheet_name, engine='openpyxl')
+                        df_orig = df.copy() # Keep for the ZIP version
                         
-                    # Add metadata as required: WORKBOOK NAME and SHEET NAME
-                    df["WORKBOOK NAME"] = name
-                    df["SHEET NAME"] = sheet_name
+                        df = df.dropna(how='all')
+                        if df.empty: continue
+                        
+                        # Generate RID: Just the original row number (e.g. 6)
+                        df["RID"] = df.index + 2
+                        df_orig.insert(0, "RID", df_orig.index + 2)
+
+                        # Metadata (Separate columns)
+                        df["WORKBOOK NAME"] = name
+                        df["SHEET NAME"] = sheet_name
+                        
+                        # Validation for "DATE ERROR" tagging
+                        temp_df = self.normalize_columns(df.copy())
+                        temp_df = self.map_columns(temp_df)
+                        temp_df = self.handle_timestamp_logic(temp_df)
+                        temp_df = self.validate_rows(temp_df)
+                        
+                        # Map the validation status back to the original dataframe
+                        # Using the index to match precisely
+                        df_orig["DATE ERROR"] = "NO"
+                        invalid_indices = temp_df[temp_df["ERROR REASON"] != ""].index
+                        df_orig.loc[invalid_indices, "DATE ERROR"] = "YES"
+                        
+                        self.raw_data.append(df)
+                        workbook_dfs[sheet_name] = df_orig
                     
-                    self.raw_data.append(df)
+                    self.raw_data_with_rid.append({"name": name, "sheets": workbook_dfs})
+                
             except Exception as e:
                 err_msg = f"Error loading {name}: {str(e)}"
                 print(err_msg)
@@ -64,12 +103,12 @@ class ExcelProcessor:
     def normalize_columns(self, df):
         """Trim spaces, lowercase (except metadata), and remove duplicate columns."""
         # Normalize column names - preserve metadata casing
-        protected = ["WORKBOOK NAME", "SHEET NAME"]
+        protected = ["WORKBOOK NAME", "SHEET NAME", "RID", "DUPLICATE", "Merged Column", "Conflict", "ERROR REASON", "ISSUE"]
         new_cols = []
         for c in df.columns:
             c_str = str(c).strip()
-            if c_str in protected:
-                new_cols.append(c_str)
+            if c_str.upper() in protected:
+                new_cols.append(c_str.upper())
             else:
                 new_cols.append(c_str.lower())
         df.columns = new_cols
@@ -491,8 +530,79 @@ class ExcelProcessor:
             final += metadata
             return df[final]
 
-        all_data = apply_final_order(valid_df)
-        distinct_data = apply_final_order(distinct_df)
-        invalid_data = apply_final_order(invalid_df, is_invalid=True)
+        return apply_final_order(valid_df), apply_final_order(distinct_df), apply_final_order(invalid_df, is_invalid=True), None
 
-        return all_data, distinct_data, invalid_data, None
+    def create_raw_master(self, progress_cb=None):
+        """Phase 1: Consolidate all data into a raw master file with specific ordering and validation."""
+        if not self.raw_data:
+            return None, None, "No data loaded."
+            
+        if progress_cb: progress_cb("Consolidating all data...", 30)
+        master_df = pd.concat(self.raw_data, ignore_index=True)
+        
+        # Validation Logic
+        master_df = self.normalize_columns(master_df)
+        master_df = self.map_columns(master_df)
+        master_df = self.handle_timestamp_logic(master_df)
+        master_df = self.validate_rows(master_df)
+        
+        # Categorize Issues
+        master_df["ISSUE"] = master_df["ERROR REASON"].apply(
+            lambda x: "Functional Issue" if "range" in str(x).lower() else ("Conversional Issue" if x != "" else "")
+        )
+
+        # Duplicate detection (Internal only for marking)
+        matched_cols = [c for c in ["Timestamp", "Coin", "Quantity", "$", "INR"] if c in master_df.columns]
+        if matched_cols:
+            def get_key(row):
+                kp = [str(row[c]).strip().lower() if not pd.isna(row[c]) else "nan" for c in matched_cols]
+                return "|".join(kp)
+            master_df["_key"] = master_df.apply(get_key, axis=1)
+            master_df["DUPLICATE"] = np.where(master_df.duplicated(subset=["_key"], keep=False), "Duplicate", "Unique")
+            master_df = master_df.drop(columns=["_key"])
+        else:
+            master_df["DUPLICATE"] = "Unknown"
+
+        # Final Formatting & Column Ordering
+        def apply_raw_order(df, is_invalid=False):
+            cols = df.columns.tolist()
+            priority = ["Timestamp", "WORKBOOK NAME", "SHEET NAME", "RID", "DUPLICATE"]
+            if is_invalid:
+                priority = ["Timestamp", "ISSUE", "WORKBOOK NAME", "SHEET NAME", "RID"]
+            
+            others = sorted([c for c in cols if c not in priority and c not in ["ERROR REASON", "ISSUE"]])
+            final_cols = [c for c in priority if c in cols] + others
+            if "ERROR REASON" in cols: final_cols += ["ERROR REASON"]
+            if not is_invalid and "ISSUE" in cols: final_cols += ["ISSUE"]
+            
+            return df[final_cols]
+        
+        # Split but keep ALL in master
+        invalid_df = master_df[master_df["ERROR REASON"] != ""].copy()
+        
+        raw_master = apply_raw_order(master_df)
+        invalid_master = apply_raw_order(invalid_df, is_invalid=True)
+        
+        if progress_cb: progress_cb("Master file ready.", 100)
+        return raw_master, invalid_master, None
+
+    def get_updated_files_zip(self):
+        """Write individual workbooks (with RID) into a ZIP archive."""
+        import zipfile
+        import io
+        
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            for item in self.raw_data_with_rid:
+                file_name = item["name"]
+                sheets = item["sheets"]
+                
+                # Create Excel in memory
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+                    for s_name, s_df in sheets.items():
+                        s_df.to_excel(writer, sheet_name=s_name, index=False)
+                
+                zf.writestr(file_name, excel_buffer.getvalue())
+                
+        return zip_buffer.getvalue()

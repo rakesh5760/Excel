@@ -37,53 +37,35 @@ st.markdown("""
 
 def main():
     st.title("📊 Excel Data Processor & Consolidator")
-    st.markdown("### Process, Normalize, and Consolidate your Excel reports with Dynamic Selection.")
+    st.markdown("### Consolidate, Track (RID), and Process your Excel reports.")
     
+    # 1. Action Selection
+    action = st.radio("Select Action:", ["Create Raw Master", "Process Data"], horizontal=True)
+
     # Sidebar for Configuration
     st.sidebar.header("⚙️ Configuration")
-    
     st.sidebar.markdown("#### 🔑 Duplicate Keys & Filters")
-    
-    # Column 1
     col1_name = st.sidebar.text_input("Column 1 Name", value="Timestamp")
     col1_filter = st.sidebar.text_input("Filter Value for Col 1 (Optional)", placeholder="e.g. 2017-11-27")
-    
-    # Column 2
     col2_name = st.sidebar.text_input("Column 2 Name", value="Coin")
     col2_filter = st.sidebar.text_input("Filter Value for Col 2 (Optional)", placeholder="e.g. BTC")
-    
-    # Column 3
     col3_name = st.sidebar.text_input("Column 3 Name", value="Quantity")
     col3_filter = st.sidebar.text_input("Filter Value for Col 3 (Optional)")
     
     st.sidebar.markdown("#### 🕒 Timestamp Hint")
-    ts_hint = st.sidebar.selectbox(
-        "Format for Timestamp Filter",
-        ["YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD", "HH:MM", "HH:MM:SS"]
-    )
-    
+    ts_hint = st.sidebar.selectbox("Format for Timestamp Filter", ["YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD", "HH:MM", "HH:MM:SS"])
     st.sidebar.markdown("---")
-    st.sidebar.info("""
-    **Rules:**
-    - One of the 3 columns MUST map to Timestamp.
-    - WORKBOOK NAME and SHEET NAME are preserved.
-    - Empty filter values will include all data for that column.
-    """)
+    st.sidebar.info("Rules: \n- One of the columns MUST be Timestamp.\n- RID tracks rows across all files.")
 
     # Main Area - Input Mode
     input_mode = st.radio("Select Input Mode:", ["File Upload", "Local Folder Path"], horizontal=True)
-    
     source = None
     if input_mode == "File Upload":
-        source = st.file_uploader(
-            "Upload multiple Excel files (.xlsx)",
-            type=["xlsx"],
-            accept_multiple_files=True
-        )
+        source = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
     else:
-        source = st.text_input("Enter the full path to your folder containing Excel files:", placeholder="C:\\Users\\Data\\Excels")
+        source = st.text_input("Enter folder path:", placeholder="C:\\Users\\Data\\Excels")
         if source and not os.path.isdir(source):
-            st.error("Invalid Directory: Provided path does not exist or is not a folder.")
+            st.error("Invalid Directory Path.")
             source = None
 
     if source:
@@ -93,82 +75,94 @@ def main():
         st.subheader("🔍 Pre-Processing Preview")
         detected_cols = set()
         file_info = []
-        
-        files_to_preview = []
-        if input_mode == "File Upload":
-            files_to_preview = source
-        else:
-            if os.path.isdir(source):
-                for f in os.listdir(source):
-                    if f.endswith(".xlsx") and not f.startswith("~$"):
-                        files_to_preview.append(os.path.join(source, f))
+        files_to_preview = source if input_mode == "File Upload" else [os.path.join(source, f) for f in os.listdir(source) if f.endswith(".xlsx") and not f.startswith("~$")]
         
         if not files_to_preview:
-            st.warning("No Excel files found to preview.")
+            st.warning("No Excel files found.")
         else:
             with st.spinner("Analyzing files..."):
                 for f in files_to_preview:
                     try:
+                        # Reset pointer if it's a buffer
+                        if hasattr(f, 'seek'): f.seek(0)
+                        
                         name = os.path.basename(f) if isinstance(f, str) else f.name
-                        xls = pd.ExcelFile(f)
-                        for sheet in xls.sheet_names:
-                            df_head = pd.read_excel(xls, sheet_name=sheet, nrows=0)
-                            detected_cols.update([str(c).strip() for c in df_head.columns])
-                            file_info.append({"Workbook": name, "Sheet": sheet, "Cols": len(df_head.columns)})
-                    except Exception as e:
-                        st.error(f"Error reading {name}: {e}")
+                        with pd.ExcelFile(f, engine='openpyxl') as xls:
+                            for sheet in xls.sheet_names:
+                                df_h = pd.read_excel(xls, sheet_name=sheet, nrows=0)
+                                detected_cols.update([str(c).strip() for c in df_h.columns])
+                                file_info.append({"Workbook": name, "Sheet": sheet, "Cols": len(df_h.columns)})
+                        
+                        # Reset again after reading
+                        if hasattr(f, 'seek'): f.seek(0)
+                    except: pass
             
             p_col1, p_col2 = st.columns([1, 2])
-            with p_col1:
-                st.write("**Detected Workbooks & Sheets:**")
-                st.dataframe(pd.DataFrame(file_info), width='stretch', height=200)
-            
-            with p_col2:
-                st.write("**Detected Column Names (Global):**")
-                sorted_cols = sorted(list(detected_cols))
-                st.write(", ".join(sorted_cols))
+            with p_col1: st.dataframe(pd.DataFrame(file_info), height=200)
+            with p_col2: st.write(", ".join(sorted(list(detected_cols))))
 
         st.markdown("---")
         
-        # Process Button
-        if st.button("🚀 Process & Select Data"):
-            user_cols = [col1_name, col2_name, col3_name]
-            filter_values = [col1_filter, col2_filter, col3_filter]
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            def my_cb(msg, val):
-                status_text.text(msg)
-                if val is not None:
-                    progress_bar.progress(val)
+        if action == "Create Raw Master":
+            st.subheader("🛠️ Step 1: Create Raw Master")
+            if st.button("🧶 Generate Raw Master"):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                def ui_cb(msg, val):
+                    status_text.text(msg); progress_bar.progress(val if val else 0)
+                
+                processor.load_files(source)
+                raw_m, inv_m, error = processor.create_raw_master(progress_cb=ui_cb)
+                
+                if error: st.error(error)
+                else:
+                    # Persistence
+                    st.session_state['master_df'] = raw_m
+                    st.session_state['master_invalid'] = inv_m
+                    st.session_state['master_zip'] = processor.get_updated_files_zip()
+                    st.session_state['master_sheet_count'] = len(processor.raw_data)
+                    st.success(f"✅ Raw Master Created! (Consolidated {st.session_state['master_sheet_count']} sheets)")
 
-            with st.spinner("Initializing..."):
-                all_data, distinct_data, invalid_data, error = processor.process(
-                    source, user_cols, filter_values, ts_hint, progress_cb=my_cb
+            # Display persistent results
+            if 'master_df' in st.session_state:
+                m_df = st.session_state['master_df']
+                i_df = st.session_state['master_invalid']
+                
+                m_tab1, m_tab2 = st.tabs(["RAW MASTER (All Data)", "INVALID DATA"])
+                with m_tab1: st.dataframe(m_df.head(100).astype(str), width='stretch')
+                with m_tab2: st.dataframe(i_df.head(100).astype(str), width='stretch')
+
+                m_c1, m_c2 = st.columns(2)
+                with m_c1:
+                    out_m = io.BytesIO()
+                    with pd.ExcelWriter(out_m, engine='xlsxwriter') as wr: 
+                        m_df.to_excel(wr, sheet_name='RawMaster', index=False)
+                        i_df.to_excel(wr, sheet_name='InvalidData', index=False)
+                    st.download_button("📥 Download RAW MASTER.xlsx", out_m.getvalue(), "RAW_MASTER.xlsx")
+                with m_c2:
+                    st.download_button("📦 Download UPDATED SOURCE FILES (ZIP)", st.session_state['master_zip'], "SOURCE_FILES_WITH_RID.zip")
+
+        else: # Process Data
+            st.subheader("📊 Step 2: Process & Consolidate")
+            if st.button("🚀 Process & Select Data"):
+                p_bar = st.progress(0)
+                p_text = st.empty()
+                def p_cb(msg, val):
+                    p_text.text(msg); p_bar.progress(val if val else 0)
+                
+                all_d, dist_d, inv_d, err = processor.process(
+                    source, [col1_name, col2_name, col3_name], 
+                    [col1_filter, col2_filter, col3_filter], 
+                    ts_hint, progress_cb=p_cb
                 )
                 
-                # Cleanup progress
-                progress_bar.empty()
-                status_text.empty()
-                
-                if error:
-                    st.error(error)
+                if err: 
+                    st.error(err)
                 else:
-                    # Log any skipped files
-                    if processor.load_errors:
-                        for skip_err in processor.load_errors:
-                            st.warning(f"⚠️ {skip_err}")
-
-                    if all_data.empty:
-                        st.info("ℹ️ No rows matched your selected filters or columns. Please check your configuration.")
-                        # Clear previous data from state to prevent showing old results
-                        if 'all_data' in st.session_state: del st.session_state['all_data']
-                    else:
-                        st.session_state['all_data'] = all_data
-                        st.session_state['distinct_data'] = distinct_data
-                        st.session_state['invalid_data'] = invalid_data
-                        st.success("✅ Extraction complete!")
+                    st.session_state['all_data'] = all_d
+                    st.session_state['distinct_data'] = dist_d
+                    st.session_state['invalid_data'] = inv_d
+                    st.success("✅ Extraction complete!")
 
         # Show results and Column Merger if data exists in session state
         if 'all_data' in st.session_state and not st.session_state['all_data'].empty:
